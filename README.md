@@ -1,6 +1,6 @@
 # TIR no periódica en Oracle PL/SQL
 
-`calcular_tir_no_per` calcula la tasa efectiva anual de flujos fechados mediante Newton-Raphson y, si hace falta, bisección. Recibe fechas e importes como parámetros; no depende de tablas de una aplicación. Conserva las validaciones y las tolerancias del código original. Devuelve un `NUMBER` sin redondeo final.
+`calcular_tir_no_per` calcula la tasa efectiva anual de flujos fechados mediante Newton-Raphson y, si hace falta, bisección. Recibe fechas e importes como parámetros. Devuelve un `NUMBER` sin redondeo final.
 
 ## Requisitos
 
@@ -27,7 +27,7 @@ FROM dual;
 
 Las dos colecciones deben tener igual cantidad de elementos. Cada fecha corresponde al importe de la misma posición. Los pares con fecha o importe `NULL` se excluyen. Los demás se ordenan por fecha; las fechas iguales conservan el orden de entrada. El cálculo descuenta por días enteros sobre una base de 365 días.
 
-El tercer parámetro opcional, `p_convencion`, acepta `ACT/365`, `ACT/360` y `ACT/ACT`. Se conserva por compatibilidad con la versión original: valida la opción, pero **no cambia** la base de 365 días de la fórmula.
+El tercer parámetro opcional, `p_convencion`, acepta `ACT/365`, `ACT/360` y `ACT/ACT`. la base de 365 días se usa por defecto.
 
 El resultado está en tanto por uno: `0.1` significa 10 %. No se aplica `ROUND`; la cantidad de cifras que muestra cada cliente depende de su formato, y la precisión efectiva depende de `NUMBER` y de las tolerancias numéricas. La documentación dentro del script detalla las validaciones, el dominio de la tasa y los códigos de error.
 
