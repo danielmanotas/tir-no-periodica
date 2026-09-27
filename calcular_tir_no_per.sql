@@ -17,8 +17,9 @@ CREATE OR REPLACE TYPE tir_valores AS TABLE OF NUMBER;
   *   p_convencion : Admite ACT/365, ACT/360 y ACT/ACT, sin distinguir mayúsculas
   *                  y después de retirar espacios exteriores. NULL equivale a
   *                  ACT/365. Una cadena formada solo por espacios es inválida.
-  *                  La base efectiva del cálculo es siempre ACT/365; este
-  *                  parámetro valida la opción y no modifica el denominador.
+  *                  ACT/365 divide los días reales entre 365; ACT/360 entre 360.
+  *                  ACT/ACT aplica ISDA: suma los días de cada año divididos
+  *                  entre 365 o 366 según sea común o bisiesto.
   *
   * Datos y validaciones:
   *   Las colecciones deben existir y tener igual longitud. Se excluyen pares
@@ -28,7 +29,8 @@ CREATE OR REPLACE TYPE tir_valores AS TABLE OF NUMBER;
   *   de signo. Los valores cero no cuentan como cambio de signo.
   *
   * Cálculo:
-  *   t_i = (TRUNC(fecha_i) - TRUNC(fecha_1)) / 365
+  *   t_i = fracción de año entre TRUNC(fecha_1) y TRUNC(fecha_i), según
+  *   p_convencion. ACT/ACT incluye el día inicial y excluye el final.
   *   NPV(r) = SUM(valor_i / (1 + r)^t_i)
   *   Se busca NPV(r) = 0 con Newton-Raphson y reducción del paso; si no se
   *   obtiene convergencia, se utiliza bisección con expansión acotada.
@@ -112,6 +114,38 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
     c_max_iter_bis  CONSTANT PLS_INTEGER := 160;
     c_rate_min      CONSTANT NUMBER      := -0.999999;
     c_rate_max      CONSTANT NUMBER      := 100.0;
+
+    -- Fracción de año: fechas truncadas, calendario gregoriano.
+    -- El avance se limita a p_fin para no construir fechas fuera del rango DATE.
+    FUNCTION f_tiempo(p_inicio DATE, p_fin DATE) RETURN NUMBER IS
+      v_inicio    DATE := p_inicio;
+      v_anio      PLS_INTEGER;
+      v_dias_anio PLS_INTEGER;
+      v_dias      NUMBER;
+      v_total     NUMBER := 0;
+    BEGIN
+      IF v_convencion = 'ACT/365' THEN
+        RETURN (p_fin - p_inicio) / 365.0;
+      ELSIF v_convencion = 'ACT/360' THEN
+        RETURN (p_fin - p_inicio) / 360.0;
+      END IF;
+
+      -- ACT/ACT ISDA: cada tramo usa la longitud de su propio año.
+      WHILE v_inicio < p_fin LOOP
+        v_anio := EXTRACT(YEAR FROM v_inicio);
+        IF MOD(v_anio, 400) = 0
+           OR (MOD(v_anio, 4) = 0 AND MOD(v_anio, 100) <> 0) THEN
+          v_dias_anio := 366;
+        ELSE
+          v_dias_anio := 365;
+        END IF;
+        v_dias := LEAST(p_fin - v_inicio,
+                       v_dias_anio - (v_inicio - TRUNC(v_inicio, 'YYYY')));
+        v_total := v_total + v_dias / v_dias_anio;
+        v_inicio := v_inicio + v_dias;
+      END LOOP;
+      RETURN v_total;
+    END f_tiempo;
 
     /*
      * Calcula el NPV para la tasa p_r usando fechas sin componente horario.
@@ -381,7 +415,7 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
     END f_bisection;
   BEGIN
 
-    -- Validar la convención; la ecuación utiliza siempre una base de 365 días.
+    -- Normalizar la convención; NULL conserva el valor predeterminado ACT/365.
     v_convencion := UPPER(TRIM(NVL(p_convencion, 'ACT/365')));
 
     IF v_convencion IS NULL OR v_convencion NOT IN ('ACT/365', 'ACT/360', 'ACT/ACT') THEN
@@ -466,7 +500,7 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
     -- truncada. Los flujos originales y su orden siguen intactos para el calculo.
     v_dia := TRUNC(v_fechas(1));
     FOR i IN 1 .. v_n LOOP
-      v_tiempos(i) := (TRUNC(v_fechas(i)) - v_base_date) / 365.0;
+      v_tiempos(i) := f_tiempo(v_base_date, TRUNC(v_fechas(i)));
       IF TRUNC(v_fechas(i)) <> v_dia THEN
         IF v_suma_dia <> 0 THEN v_identidad := FALSE; END IF;
         v_suma_dia := 0;
