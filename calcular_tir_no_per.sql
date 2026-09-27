@@ -36,7 +36,7 @@ CREATE OR REPLACE TYPE tir_valores AS TABLE OF NUMBER;
   * Parámetros numéricos:
   *   Semilla: constante 0.000001.
   *   Dominio admitido para la raíz interna: -0.999999 < r < 100.
-  *   Máximo: 100 iteraciones por método.
+  *   Máximo: 100 iteraciones Newton y 160 iteraciones de bisección.
   *   Tolerancia de NPV: SUM(ABS(valor_i)) * 1E-18.
   *   Tolerancia absoluta de tasa: 1E-18.
   *   Newton acepta un residuo cero o exige simultáneamente la tolerancia de
@@ -108,6 +108,8 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
     c_tol_rate      CONSTANT NUMBER      := 1E-18;
     c_tol_npv_rel   CONSTANT NUMBER      := 1E-18;
     c_max_iter      CONSTANT PLS_INTEGER := 100;
+    -- Cerca del límite inferior el residuo exige más precisión que la tasa.
+    c_max_iter_bis  CONSTANT PLS_INTEGER := 160;
     c_rate_min      CONSTANT NUMBER      := -0.999999;
     c_rate_max      CONSTANT NUMBER      := 100.0;
 
@@ -296,8 +298,8 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
      * semiancho <= c_tol_rate y ABS(NPV) <= v_tol_npv.
      *
      *   Los extremos se comprueban mediante f_convergio.
-     *   La expansión mueve el extremo con menor magnitud de residuo;
-     *   en caso de empate expande el superior.
+     *   Cada expansión mueve ambos extremos que aún no alcanzan su límite.
+     *   En 14 expansiones se cubre todo el dominio (el superior requiere 6).
      *   Puede evaluar los límites, pero el llamador exige una raíz interior.
      *   No captura localmente excepciones numéricas.
      */
@@ -325,30 +327,35 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
       END IF;
 
       WHILE SIGN(v_flo) = SIGN(v_fhi) AND v_expand < 15 LOOP
-        IF ABS(v_flo) < ABS(v_fhi) THEN
+        EXIT WHEN v_lo = c_rate_min AND v_hi = c_rate_max;
+        v_expand := v_expand + 1;
+        v_iteracion := v_expand;
+        IF v_lo > c_rate_min THEN
           v_lo  := GREATEST(c_rate_min, v_lo - (1 + v_lo) * 0.5);
           v_flo := f_npv(v_lo);
-        ELSE
+        END IF;
+        IF v_hi < c_rate_max THEN
           v_hi  := LEAST(c_rate_max, v_hi * 2.0);
           v_fhi := f_npv(v_hi);
         END IF;
 
-        IF f_convergio(v_flo, f_der(v_lo), v_tol_npv) THEN
+        IF v_lo > c_rate_min
+           AND f_convergio(v_flo, f_der(v_lo), v_tol_npv) THEN
           p_ok := TRUE;
           RETURN v_lo;
-        ELSIF f_convergio(v_fhi, f_der(v_hi), v_tol_npv) THEN
+        ELSIF v_hi < c_rate_max
+           AND f_convergio(v_fhi, f_der(v_hi), v_tol_npv) THEN
           p_ok := TRUE;
           RETURN v_hi;
         END IF;
 
-        v_expand := v_expand + 1;
       END LOOP;
 
       IF SIGN(v_flo) = SIGN(v_fhi) THEN
         RETURN NULL;
       END IF;
 
-      FOR iter IN 1 .. c_max_iter LOOP
+      FOR iter IN 1 .. c_max_iter_bis LOOP
         v_iteracion := iter;
         v_mid  := v_lo + (v_hi - v_lo) / 2.0;
         v_fmid := f_npv(v_mid);
@@ -368,8 +375,8 @@ CREATE OR REPLACE FUNCTION calcular_tir_no_per (
         END IF;
       END LOOP;
 
-      p_ok := v_fmid = 0 OR ((v_hi - v_lo) <= 2 * c_tol_rate
-              AND ABS(v_fmid) <= v_tol_npv);
+      -- El último punto ya se evaluó con su intervalo correspondiente.
+      p_ok := FALSE;
       RETURN v_mid;
     END f_bisection;
   BEGIN
