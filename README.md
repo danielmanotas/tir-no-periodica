@@ -1,6 +1,6 @@
 # TIR no periódica en Oracle PL/SQL
 
-**Versión 1.1**
+**Versión 1.2**
 
 `calcular_tir_no_per` calcula la tasa efectiva anual de flujos fechados mediante Newton-Raphson y, si hace falta, bisección. Recibe fechas e importes como parámetros. Devuelve un `NUMBER` sin redondeo final.
 
@@ -27,9 +27,28 @@ SELECT calcular_tir_no_per(
 FROM dual;
 ```
 
-Las dos colecciones deben tener igual cantidad de elementos. Cada fecha corresponde al importe de la misma posición. Los pares con fecha o importe `NULL` se excluyen. Los demás se ordenan por fecha; las fechas iguales conservan el orden de entrada. El cálculo descuenta por días enteros sobre una base de 365 días.
+Las dos colecciones deben tener igual cantidad de elementos. Cada fecha corresponde al importe de la misma posición. Los pares con fecha o importe `NULL` se excluyen. Los demás se ordenan por fecha; las fechas iguales conservan el orden de entrada. El cálculo descuenta por días enteros según la convención seleccionada; por defecto usa ACT/365.
 
-**Advertencia:** `p_convencion` acepta `ACT/365`, `ACT/360` y `ACT/ACT`, pero no modifica el resultado. Todas las opciones usan días reales divididos entre 365. Las otras convenciones se admiten solo por compatibilidad.
+El tercer parámetro opcional, `p_convencion`, determina la fracción de año:
+
+| Convención | Cálculo de `t_i` |
+| --- | --- |
+| `ACT/365` (predeterminada) | Días reales entre la fecha base y el flujo, divididos entre 365. |
+| `ACT/360` | Días reales entre la fecha base y el flujo, divididos entre 360. |
+| `ACT/ACT` | Variante ISDA: suma de los días de cada año divididos entre 365 o 366, según corresponda. |
+
+Omitir el parámetro o pasar `NULL` utiliza `ACT/365`. Se admiten minúsculas y espacios exteriores. Una cadena formada solo por espacios es inválida. ACT/ACT utiliza el calendario gregoriano, incluye el día inicial y excluye el final; no requiere fechas de cupón. Se utiliza la variante [Actual/Actual ISDA](https://www.isda.org/book/actualactual-day-count-fraction/).
+
+```sql
+SELECT calcular_tir_no_per(
+         tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+         tir_valores(-1000, 1100),
+         'ACT/ACT'
+       ) AS tasa_anual
+FROM dual;
+```
+
+En este ejemplo ACT/ACT usa `366/366` y produce una tasa anual de `0.1`; ACT/365 usa `366/365` y ACT/360 usa `366/360`.
 
 El resultado está en tanto por uno: `0.1` significa 10 %. No se aplica `ROUND`; la cantidad de cifras que muestra cada cliente depende de su formato, y la precisión efectiva depende de `NUMBER` y de las tolerancias numéricas. La documentación dentro del script detalla las validaciones, el dominio de la tasa y los códigos de error.
 
@@ -44,7 +63,7 @@ El resultado está en tanto por uno: `0.1` significa 10 %. No se aplica `ROUND`;
 
 ## Cálculo y límites
 
-La fecha base es el día del primer flujo ordenado. Para cada flujo, `t_i = (TRUNC(fecha_i) - TRUNC(fecha_1)) / 365` y `NPV(r) = SUM(valor_i / (1 + r)^t_i)`. Se busca `NPV(r) = 0` mediante Newton-Raphson con reducción de paso; si no converge, se intenta bisección con expansión acotada.
+La fecha base es el día del primer flujo ordenado. Para cada flujo, `t_i` es la fracción de año desde la fecha base según `p_convencion`, y `NPV(r) = SUM(valor_i / (1 + r)^t_i)`. Se busca `NPV(r) = 0` mediante Newton-Raphson con reducción de paso; si no converge, se intenta bisección con expansión acotada.
 
 La semilla es `0.000001`; la raíz debe cumplir `-0.999999 < r < 100`. Newton admite 100 iteraciones y bisección 160. La tolerancia monetaria es `SUM(ABS(valor_i)) * 1E-18` y la tolerancia absoluta de tasa es `1E-18`. Newton acepta un residuo exactamente cero o exige simultáneamente la tolerancia monetaria y `ABS(NPV / derivada) <= 1E-18`. Bisección comprueba el residuo y el ancho del intervalo. Parte de `[-0.99, 2]` y amplía ambos extremos hasta obtener signos opuestos, con un máximo de 15 expansiones acotadas por el dominio. Estas tolerancias son criterios de aceptación numérica, no una garantía de decimales exactos.
 
@@ -69,11 +88,11 @@ Después de instalar la función, ejecuta [`test_calcular_tir_no_per.sql`](test_
 @test_calcular_tir_no_per.sql
 ```
 
-El archivo de pruebas contiene toda la suite y no necesita scripts auxiliares. Primero comprueba los objetos instalados y muestra los errores de compilación. Después ejecuta 20 pruebas funcionales y dos comprobaciones del método de bisección. Ante un error SQL, termina con `FAILURE ROLLBACK`.
+El archivo de pruebas contiene toda la suite y no necesita scripts auxiliares. Primero comprueba los objetos instalados y muestra los errores de compilación. Después ejecuta 30 pruebas funcionales y dos comprobaciones del método de bisección. Ante un error SQL, termina con `FAILURE ROLLBACK`.
 
 La confirmación de bisección crea una copia temporal de la función con un nombre aleatorio `TIR_BIS_...`, añade una aserción del método al retorno y elimina la copia al terminar. Requiere permiso para crear funciones. No modifica la función original. Si la sesión se interrumpe, podría quedar el objeto temporal.
 
-El mensaje final esperado es `Suite completa aprobada: 20 pruebas funcionales y 2 de biseccion.` Los archivos SQL deben ejecutarse como scripts.
+El mensaje final esperado es `Suite completa aprobada: 30 pruebas funcionales y 2 de biseccion.` Los archivos SQL deben ejecutarse como scripts.
 
 ## Estructura del proyecto
 
