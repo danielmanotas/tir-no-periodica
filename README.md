@@ -1,5 +1,7 @@
 # TIR no periódica en Oracle PL/SQL
 
+**Versión 1.1**
+
 `calcular_tir_no_per` calcula la tasa efectiva anual de flujos fechados mediante Newton-Raphson y, si hace falta, bisección. Recibe fechas e importes como parámetros. Devuelve un `NUMBER` sin redondeo final.
 
 ## Requisitos
@@ -27,7 +29,7 @@ FROM dual;
 
 Las dos colecciones deben tener igual cantidad de elementos. Cada fecha corresponde al importe de la misma posición. Los pares con fecha o importe `NULL` se excluyen. Los demás se ordenan por fecha; las fechas iguales conservan el orden de entrada. El cálculo descuenta por días enteros sobre una base de 365 días.
 
-El tercer parámetro opcional, `p_convencion`, acepta `ACT/365`, `ACT/360` y `ACT/ACT`. la base de 365 días se usa por defecto.
+**Advertencia:** `p_convencion` acepta `ACT/365`, `ACT/360` y `ACT/ACT`, pero no modifica el resultado. Todas las opciones usan días reales divididos entre 365. Las otras convenciones se admiten solo por compatibilidad.
 
 El resultado está en tanto por uno: `0.1` significa 10 %. No se aplica `ROUND`; la cantidad de cifras que muestra cada cliente depende de su formato, y la precisión efectiva depende de `NUMBER` y de las tolerancias numéricas. La documentación dentro del script detalla las validaciones, el dominio de la tasa y los códigos de error.
 
@@ -44,7 +46,7 @@ El resultado está en tanto por uno: `0.1` significa 10 %. No se aplica `ROUND`;
 
 La fecha base es el día del primer flujo ordenado. Para cada flujo, `t_i = (TRUNC(fecha_i) - TRUNC(fecha_1)) / 365` y `NPV(r) = SUM(valor_i / (1 + r)^t_i)`. Se busca `NPV(r) = 0` mediante Newton-Raphson con reducción de paso; si no converge, se intenta bisección con expansión acotada.
 
-La semilla es `0.000001`; la raíz debe cumplir `-0.999999 < r < 100`. Cada método tiene un máximo de 100 iteraciones. La tolerancia monetaria es `SUM(ABS(valor_i)) * 1E-18` y la tolerancia absoluta de tasa es `1E-18`. Newton acepta un residuo exactamente cero o exige simultáneamente la tolerancia monetaria y `ABS(NPV / derivada) <= 1E-18`. Bisección comprueba el residuo y el ancho del intervalo. Estas tolerancias son criterios de aceptación numérica, no una garantía de decimales exactos.
+La semilla es `0.000001`; la raíz debe cumplir `-0.999999 < r < 100`. Newton admite 100 iteraciones y bisección 160. La tolerancia monetaria es `SUM(ABS(valor_i)) * 1E-18` y la tolerancia absoluta de tasa es `1E-18`. Newton acepta un residuo exactamente cero o exige simultáneamente la tolerancia monetaria y `ABS(NPV / derivada) <= 1E-18`. Bisección comprueba el residuo y el ancho del intervalo. Parte de `[-0.99, 2]` y amplía ambos extremos hasta obtener signos opuestos, con un máximo de 15 expansiones acotadas por el dominio. Estas tolerancias son criterios de aceptación numérica, no una garantía de decimales exactos.
 
 ## Errores de negocio
 
@@ -67,4 +69,30 @@ Después de instalar la función, ejecuta [`test_calcular_tir_no_per.sql`](test_
 @test_calcular_tir_no_per.sql
 ```
 
-El script comprueba tasas esperadas, el retorno sin redondeo, la ordenación, los flujos cero, la exclusión de pares incompletos y los errores principales. Imprime `Pruebas aprobadas: 11` si todo pasa y termina con error SQL ante un fallo. Necesita `DBMS_OUTPUT` habilitado, lo que hace el propio script con `SET SERVEROUTPUT ON`.
+El archivo de pruebas contiene toda la suite y no necesita scripts auxiliares. Primero comprueba los objetos instalados y muestra los errores de compilación. Después ejecuta 20 pruebas funcionales y dos comprobaciones del método de bisección. Ante un error SQL, termina con `FAILURE ROLLBACK`.
+
+La confirmación de bisección crea una copia temporal de la función con un nombre aleatorio `TIR_BIS_...`, añade una aserción del método al retorno y elimina la copia al terminar. Requiere permiso para crear funciones. No modifica la función original. Si la sesión se interrumpe, podría quedar el objeto temporal.
+
+El mensaje final esperado es `Suite completa aprobada: 20 pruebas funcionales y 2 de biseccion.` Los archivos SQL deben ejecutarse como scripts.
+
+## Estructura del proyecto
+
+```text
+README.md
+calcular_tir_no_per.sql
+test_calcular_tir_no_per.sql
+```
+
+## Precisión numérica
+
+La suite compara cuatro flujos en los días 0, 47, 203 y 400, con importes `[-1000, -200, -300, 1800]`, contra una referencia independiente calculada con Python Decimal a 80 cifras:
+
+```text
+0.20634960252626207745418017008051606867665613233880907503848730263627277864514603
+```
+
+La comparación utiliza una tolerancia absoluta de tasa de `1E-18` e informa el error observado. La referencia independiente no sustituye las pruebas en la versión de Oracle de destino.
+
+## Volumen de entrada
+
+El ordenamiento estable por inserción tiene complejidad O(n²). Como recomendación conservadora, utiliza hasta 1.000 pares por llamada antes de medir rendimiento en el entorno destino. No es una restricción impuesta por la función ni un umbral validado por benchmark. Para volúmenes mayores, deben evaluarse tanto el ordenamiento como las evaluaciones del NPV.
