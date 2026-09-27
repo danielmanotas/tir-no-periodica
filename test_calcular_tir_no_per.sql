@@ -25,7 +25,7 @@ BEGIN
 END;
 /
 
--- 2. Pruebas funcionales: 20 casos.
+-- 2. Pruebas funcionales: 30 casos.
 DECLARE
   v_tasa NUMBER;
   v_pruebas PLS_INTEGER := 0;
@@ -34,11 +34,12 @@ DECLARE
     p_nombre   IN VARCHAR2,
     p_fechas  IN tir_fechas,
     p_valores IN tir_valores,
-    p_esperada IN NUMBER
+    p_esperada IN NUMBER,
+    p_convencion IN VARCHAR2 DEFAULT 'ACT/365'
   ) IS
     v_obtenida NUMBER;
   BEGIN
-    v_obtenida := calcular_tir_no_per(p_fechas, p_valores);
+    v_obtenida := calcular_tir_no_per(p_fechas, p_valores, p_convencion);
     IF v_obtenida IS NULL OR ABS(v_obtenida - p_esperada) > 1E-18 THEN
       RAISE_APPLICATION_ERROR(-20998, p_nombre
         || ': obtenida=' || NVL(TO_CHAR(v_obtenida, 'TM9'), 'NULL')
@@ -150,20 +151,64 @@ BEGIN
     tir_fechas(DATE '2023-01-01', DATE '2023-01-01'),
     tir_valores(-1000, 900), -20007);
 
-  -- REQ-02, opcion B: las tres convenciones conservan exactamente la base 365.
-  FOR i IN 1 .. 3 LOOP
-    v_tasa := calcular_tir_no_per(
-      tir_fechas(DATE '2023-01-01', DATE '2023-01-01' + 400),
-      tir_valores(-1000, 1100),
-      CASE i WHEN 1 THEN 'ACT/365' WHEN 2 THEN 'ACT/360' ELSE 'ACT/ACT' END);
-    IF v_tasa IS NULL OR v_tasa <> calcular_tir_no_per(
-      tir_fechas(DATE '2023-01-01', DATE '2023-01-01' + 400),
-      tir_valores(-1000, 1100)) THEN
-      RAISE_APPLICATION_ERROR(-20998, 'La convencion modifico la base ACT/365');
-    END IF;
-    v_pruebas := v_pruebas + 1;
-    DBMS_OUTPUT.PUT_LINE('OK: compatibilidad de convencion ' || i);
-  END LOOP;
+  -- Convenciones: referencias independientes calculadas con Decimal a 80 cifras.
+  comprobar_tasa('ACT/365 explicito en anio bisiesto',
+    tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+    tir_valores(-1000, 1100), 0.099713585934141241287216920352387027, 'ACT/365');
+
+  comprobar_tasa('NULL conserva ACT/365',
+    tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+    tir_valores(-1000, 1100), 0.099713585934141241287216920352387027, NULL);
+
+  comprobar_tasa('ACT/360: 360 dias',
+    tir_fechas(DATE '2023-01-01', DATE '2023-12-27'),
+    tir_valores(-1000, 1100), 0.100000000000000000000000000000000000, 'ACT/360');
+
+  comprobar_tasa('Convencion con espacios y minusculas',
+    tir_fechas(DATE '2023-01-01', DATE '2023-12-27'),
+    tir_valores(-1000, 1100), 0.100000000000000000000000000000000000, ' act/360 ');
+
+  comprobar_tasa('ACT/360 en anio bisiesto',
+    tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+    tir_valores(-1000, 1100), 0.098282633848621054858808597435844066, 'ACT/360');
+
+  comprobar_tasa('ACT/ACT: anio bisiesto completo',
+    tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+    tir_valores(-1000, 1100), 0.100000000000000000000000000000000000, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: varios anios y tramos parciales',
+    tir_fechas(DATE '2023-07-01', DATE '2025-07-01'),
+    tir_valores(-1000, 1210), 0.100000000000000000000000000000000000, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: cruce de anio con febrero bisiesto',
+    tir_fechas(DATE '2023-12-31', DATE '2024-03-01'),
+    tir_valores(-1000, 1100), 0.771515501312532738710093969962185185, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: incluye 29 de febrero',
+    tir_fechas(DATE '2024-02-28', DATE '2024-03-01'),
+    tir_valores(-1000, 1010), 5.177480771011434760433076230349015494, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: siglo 2100 no bisiesto',
+    tir_fechas(DATE '2100-01-01', DATE '2101-01-01'),
+    tir_valores(-1000, 1100), 0.100000000000000000000000000000000000, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: siglo 2000 bisiesto',
+    tir_fechas(DATE '2000-01-01', DATE '2001-01-01'),
+    tir_valores(-1000, 1100), 0.100000000000000000000000000000000000, 'ACT/ACT');
+
+  comprobar_tasa('ACT/ACT: tramo dentro de anio bisiesto',
+    tir_fechas(DATE '2024-03-01', DATE '2024-12-31'),
+    tir_valores(-1000, 1100), 0.121169364140602282717273261774604134, 'ACT/ACT');
+
+  -- La llamada sin tercer argumento debe seguir utilizando ACT/365.
+  v_tasa := calcular_tir_no_per(
+    tir_fechas(DATE '2024-01-01', DATE '2025-01-01'),
+    tir_valores(-1000, 1100));
+  IF v_tasa IS NULL OR ABS(v_tasa - 0.099713585934141241287216920352387027) > 1E-18 THEN
+    RAISE_APPLICATION_ERROR(-20998, 'La convencion omitida debe utilizar ACT/365');
+  END IF;
+  v_pruebas := v_pruebas + 1;
+  DBMS_OUTPUT.PUT_LINE('OK: convencion omitida conserva ACT/365');
 
   DBMS_OUTPUT.PUT_LINE('Pruebas aprobadas: ' || v_pruebas);
 END;
